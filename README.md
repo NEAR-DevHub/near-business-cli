@@ -50,8 +50,15 @@ The repository needs these secrets:
 | Secret | Used for |
 |---|---|
 | `CARGO_REGISTRY_TOKEN` | Publishing to crates.io |
-| `NPM_TOKEN` | Publishing the npm package |
+| `NPM_TOKEN` | The first npm publish only (see below) |
 | `RELEASE_PLZ_TOKEN` (optional) | Opening the release PR so that CI runs on it |
+
+After the first release, set up [npm trusted publishing](https://docs.npmjs.com/trusted-publishers) for `near-business-cli` on npmjs.com, with GitHub Actions, repository `NEAR-DevHub/near-business-cli` and these workflow filenames:
+
+- `release-plz.yml`, for automatic releases (npm checks the calling workflow).
+- `release.yml`, for releases started by hand from the Release workflow.
+
+Then delete the `NPM_TOKEN` secret.
 
 ## License
 
