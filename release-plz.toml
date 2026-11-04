@@ -1,0 +1,7 @@
+[workspace]
+# Release only when a release PR (opened by release-plz) is merged, not on
+# every push to main.
+release_always = false
+# dist creates the GitHub Release (with binaries) in release.yml.
+git_release_enable = false
+git_tag_name = "v{{ version }}"
