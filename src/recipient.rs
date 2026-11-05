@@ -45,8 +45,8 @@ pub enum Blockchain {
 /// Where the payment is going, as far as the recipient format is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Destination {
-    /// The recipient's near.com (NEAR Intents) balance: a NEAR account,
-    /// optionally written with the `nearcom:` prefix.
+    /// The recipient's near.com (NEAR Intents) balance: a NEAR account written
+    /// with the `nearcom:` prefix (e.g. `nearcom:alice.near`).
     NearCom,
     /// A chain. `None` when the network maps to no known address format, in
     /// which case any non-empty address is accepted (as in the web app).
@@ -299,10 +299,10 @@ fn strip_near_com_prefix(address: &str) -> Option<&str> {
 /// Checks a recipient against its destination and returns the address to use:
 /// trimmed, and without the `nearcom:` prefix.
 ///
-/// The prefix names the near.com route, so it is accepted only for a near.com
-/// destination. The web app requires it there because its recipient field
-/// also picks the route; the CLI takes the route as its own argument, so the
-/// prefix is optional.
+/// The prefix names the near.com route, so it is required for a near.com
+/// destination and rejected for every other one (as in the web app). Requiring
+/// it keeps an address like `0x…` from being sent to near.com when the sender
+/// meant a public chain, or the other way round.
 pub fn validate_recipient(address: &str, destination: Destination) -> Result<String, String> {
     let trimmed = address.trim();
     if trimmed.is_empty() {
@@ -312,7 +312,13 @@ pub fn validate_recipient(address: &str, destination: Destination) -> Result<Str
     let stripped = strip_near_com_prefix(trimmed);
     match destination {
         Destination::NearCom => {
-            let account = stripped.unwrap_or(trimmed).trim();
+            let Some(account) = stripped else {
+                return Err(format!(
+                    "near.com recipients must start with '{NEAR_COM_ADDRESS_PREFIX}' \
+                     (e.g. {NEAR_COM_ADDRESS_PREFIX}alice.near)"
+                ));
+            };
+            let account = account.trim();
             validate_near_address_format(account)
                 .map_err(|e| format!("Invalid near.com recipient '{account}': {e}"))?;
             Ok(account.to_string())
@@ -441,24 +447,28 @@ mod tests {
     }
 
     #[test]
-    fn nearcom_prefix_is_for_near_com_only() {
+    fn nearcom_prefix_is_required_for_near_com_only() {
         assert_eq!(
             validate_recipient("NearCom:alice.near", Destination::NearCom).unwrap(),
             "alice.near"
         );
         assert_eq!(
-            validate_recipient("alice.near", Destination::NearCom).unwrap(),
-            "alice.near"
+            validate_recipient(&format!("nearcom:{ETH}"), Destination::NearCom).unwrap(),
+            ETH
         );
+        // Without the prefix a near.com recipient is rejected, so a public-chain
+        // address can't end up on near.com by accident.
+        assert!(validate_recipient("alice.near", Destination::NearCom).is_err());
+        assert!(validate_recipient(ETH, Destination::NearCom).is_err());
         assert!(validate_recipient("nearcom:alice", Destination::NearCom).is_err());
-        assert!(validate_recipient(ETH, Destination::NearCom).is_ok());
         assert!(
             validate_recipient(
-                "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+                "nearcom:bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
                 Destination::NearCom
             )
             .is_err()
         );
+        assert!(validate_recipient(&format!("nearcom:{ETH}"), chain("eth")).is_err());
         assert!(validate_recipient("nearcom:alice.near", chain("near")).is_err());
     }
 }

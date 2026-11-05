@@ -208,7 +208,7 @@ pub struct PaymentDetails {
     /// Destination network: "near" (NEAR account; direct transfer, or a 1Click withdrawal for NEAR Intents balances), "near.com" (NEAR Intents), or a bridge asset id (e.g. nep141:eth.omft.near)
     destination_network: String,
     #[interactive_clap(skip_default_input_arg)]
-    /// Recipient address on the destination network
+    /// Recipient address on the destination network; for near.com, a NEAR account with the `nearcom:` prefix (e.g. nearcom:alice.near)
     receiver: String,
     #[interactive_clap(skip_default_input_arg)]
     /// Description/memo for the payment
@@ -322,7 +322,13 @@ impl PaymentDetails {
 
     fn input_receiver(_context: &PaymentTokenContext) -> color_eyre::eyre::Result<Option<String>> {
         let destination = PICKED_DESTINATION.lock().ok().and_then(|picked| *picked);
-        let receiver = inquire::Text::new("Recipient address:")
+        let mut prompt = inquire::Text::new("Recipient address:");
+        if destination == Some(Destination::NearCom) {
+            prompt = prompt.with_help_message(
+                "near.com recipients need the 'nearcom:' prefix, e.g. nearcom:alice.near",
+            );
+        }
+        let receiver = prompt
             .with_validator(move |input: &str| {
                 let result = match destination {
                     Some(destination) => validate_recipient(input, destination).map(|_| ()),
