@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use crate::api::ApiClient;
 use crate::config::{NearBusinessContext, TreasuryContext};
+use crate::recipient::{Blockchain, Destination, validate_recipient};
 use crate::types::{SimplifiedToken, TokenResidency};
 use colored::Colorize;
 use strum::{EnumDiscriminants, EnumIter, EnumMessage};
@@ -12,6 +13,18 @@ const NETWORK_NEAR_DIRECT: &str = "near";
 /// Destination network sentinel: the recipient's NEAR Intents (near.com)
 /// balance. Funds stay inside intents.near.
 const NETWORK_NEAR_COM: &str = "near.com";
+
+/// Destination picked at the interactive network prompt, so the recipient
+/// prompt that follows can check the address against it. interactive_clap
+/// gives input functions no access to earlier fields; the authoritative
+/// check runs in `PaymentSendContext` either way.
+static PICKED_DESTINATION: std::sync::Mutex<Option<Destination>> = std::sync::Mutex::new(None);
+
+fn remember_destination(destination: Destination) {
+    if let Ok(mut picked) = PICKED_DESTINATION.lock() {
+        *picked = Some(destination);
+    }
+}
 
 /// v1.signer `sign` gas, mirrors the web app's `V1_SIGNER_GAS` (15 TGas).
 const V1_SIGNER_GAS: &str = "15000000000000";
@@ -194,7 +207,8 @@ pub struct PaymentDetails {
     #[interactive_clap(skip_default_input_arg)]
     /// Destination network: "near" (NEAR account; direct transfer, or a 1Click withdrawal for NEAR Intents balances), "near.com" (NEAR Intents), or a bridge asset id (e.g. nep141:eth.omft.near)
     destination_network: String,
-    /// Recipient address on the destination network
+    #[interactive_clap(skip_default_input_arg)]
+    /// Recipient address on the destination network; for near.com, a NEAR account with the `nearcom:` prefix (e.g. nearcom:alice.near)
     receiver: String,
     #[interactive_clap(skip_default_input_arg)]
     /// Description/memo for the payment
@@ -228,14 +242,17 @@ impl PaymentDetails {
 
         let mut ids: Vec<String> = Vec::new();
         let mut labels: Vec<String> = Vec::new();
+        let mut destinations: Vec<Destination> = Vec::new();
 
         if is_near_chain_token {
             ids.push(NETWORK_NEAR_DIRECT.to_string());
             labels.push("NEAR (direct transfer on the NEAR chain)".to_string());
+            destinations.push(Destination::Chain(Some(Blockchain::Near)));
         }
         if is_intents_token || !context.is_confidential {
             ids.push(NETWORK_NEAR_COM.to_string());
             labels.push("near.com (recipient's NEAR Intents balance)".to_string());
+            destinations.push(Destination::NearCom);
         }
 
         // Cross-chain destinations come from the 1Click bridge catalog: the
@@ -259,8 +276,14 @@ impl PaymentDetails {
                         for (id, label) in
                             bridge_destination_options(asset, &origin_asset, is_near_chain_token)
                         {
+                            let chain = asset
+                                .networks
+                                .iter()
+                                .find(|n| n.id == id)
+                                .and_then(|n| Blockchain::from_network(&n.name));
                             ids.push(id);
                             labels.push(label);
+                            destinations.push(Destination::Chain(chain));
                         }
                     } else {
                         tracing::info!(
@@ -286,13 +309,41 @@ impl PaymentDetails {
             ));
         }
         if ids.len() == 1 {
+            remember_destination(destinations[0]);
             return Ok(Some(ids.remove(0)));
         }
 
         let selection =
             inquire::Select::new("Select destination network:", labels.clone()).prompt()?;
         let index = labels.iter().position(|l| l == &selection).unwrap();
+        remember_destination(destinations[index]);
         Ok(Some(ids.swap_remove(index)))
+    }
+
+    fn input_receiver(_context: &PaymentTokenContext) -> color_eyre::eyre::Result<Option<String>> {
+        let destination = PICKED_DESTINATION.lock().ok().and_then(|picked| *picked);
+        let mut prompt = inquire::Text::new("Recipient address:");
+        if destination == Some(Destination::NearCom) {
+            prompt = prompt.with_help_message(
+                "near.com recipients need the 'nearcom:' prefix, e.g. nearcom:alice.near",
+            );
+        }
+        let receiver = prompt
+            .with_validator(move |input: &str| {
+                let result = match destination {
+                    Some(destination) => validate_recipient(input, destination).map(|_| ()),
+                    None if input.trim().is_empty() => {
+                        Err("Recipient address is required".to_string())
+                    }
+                    None => Ok(()),
+                };
+                Ok(match result {
+                    Ok(()) => inquire::validator::Validation::Valid,
+                    Err(msg) => inquire::validator::Validation::Invalid(msg.into()),
+                })
+            })
+            .prompt()?;
+        Ok(Some(receiver.trim().to_string()))
     }
 
     fn input_description(
@@ -378,6 +429,9 @@ impl PaymentSendContext {
                     token.symbol
                 ));
             }
+            let receiver =
+                validate_recipient(&scope.receiver, Destination::Chain(Some(Blockchain::Near)))
+                    .map_err(|e| color_eyre::eyre::eyre!(e))?;
             let raw_amount = normalize_amount(&scope.amount, &token.symbol, token.decimals)?;
             let token_id = resolve_token_id(token)?;
             tracing::info!(
@@ -391,7 +445,7 @@ impl PaymentSendContext {
             let kind = serde_json::json!({
                 "Transfer": {
                     "token_id": token_id,
-                    "receiver_id": scope.receiver,
+                    "receiver_id": receiver,
                     "amount": raw_amount,
                     "msg": serde_json::Value::Null,
                 }
@@ -403,7 +457,7 @@ impl PaymentSendContext {
         } else {
             // 1Click intents route (near.com or cross-chain).
             let origin_asset = resolve_origin_asset(token)?;
-            let (destination_asset, recipient_type, amount_decimals) = if is_near_com {
+            let (destination_asset, recipient_type, amount_decimals, destination) = if is_near_com {
                 (
                     origin_asset.clone(),
                     if is_confidential {
@@ -412,6 +466,7 @@ impl PaymentSendContext {
                         "INTENTS"
                     },
                     token.decimals,
+                    Destination::NearCom,
                 )
             } else {
                 // Cross-chain: the destination network id doubles as the
@@ -428,8 +483,15 @@ impl PaymentSendContext {
                             origin_asset
                         )
                     })?;
-                (network.id.clone(), "DESTINATION_CHAIN", network.decimals)
+                (
+                    network.id.clone(),
+                    "DESTINATION_CHAIN",
+                    network.decimals,
+                    Destination::Chain(Blockchain::from_network(&network.name)),
+                )
             };
+            let receiver = validate_recipient(&scope.receiver, destination)
+                .map_err(|e| color_eyre::eyre::eyre!(e))?;
 
             let deposit_type = if is_confidential {
                 "CONFIDENTIAL_INTENTS"
@@ -464,7 +526,7 @@ impl PaymentSendContext {
                 &destination_asset,
                 recipient_type,
                 &raw_amount,
-                &scope.receiver,
+                &receiver,
             )?;
 
             if is_confidential {
@@ -474,7 +536,7 @@ impl PaymentSendContext {
                     token,
                     &origin_asset,
                     &quote,
-                    &scope.receiver,
+                    &receiver,
                     destination_network,
                     &scope.description,
                 )?

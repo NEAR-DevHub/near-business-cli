@@ -1,5 +1,6 @@
 use crate::api::{ApiClient, CreateAddressBookEntryRequest};
 use crate::config::{NearBusinessContext, TreasuryContext};
+use crate::recipient::{Blockchain, Destination, NEAR_COM_ADDRESS_PREFIX, validate_recipient};
 use colored::Colorize;
 use strum::{EnumDiscriminants, EnumIter, EnumMessage};
 
@@ -146,9 +147,24 @@ impl AddressBookAddContext {
         previous_context.config.require_auth()?;
         let api = ApiClient::new(&previous_context.config);
 
+        let network = scope.network.trim();
+        let destination = if network.eq_ignore_ascii_case("near.com") {
+            Destination::NearCom
+        } else {
+            Destination::Chain(Blockchain::from_network(network))
+        };
+        let account = validate_recipient(&scope.address, destination)
+            .map_err(|e| color_eyre::eyre::eyre!(e))?;
+        // Stored the way the web app stores it: near.com entries keep the prefix.
+        let address = if destination == Destination::NearCom {
+            format!("{NEAR_COM_ADDRESS_PREFIX}{account}")
+        } else {
+            account
+        };
+
         let entry = CreateAddressBookEntryRequest {
             name: scope.name.clone(),
-            address: scope.address.clone(),
+            address: address.clone(),
             networks: vec![scope.network.clone()],
             note: None,
         };
@@ -159,7 +175,7 @@ impl AddressBookAddContext {
             "{} Added {} ({}) to address book",
             "✓".green().bold(),
             scope.name.cyan(),
-            scope.address
+            address
         );
 
         Ok(Self)
