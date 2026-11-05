@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3](https://github.com/NEAR-DevHub/near-business-cli/compare/v0.2.2...v0.2.3) - 2026-11-05
+
+### Added
+
+- validate recipient addresses against the destination network ([#6](https://github.com/NEAR-DevHub/near-business-cli/pull/6))
+
+### Fixed
+
+- *(ci)* build Windows release binaries without NASM ([#4](https://github.com/NEAR-DevHub/near-business-cli/pull/4))
+
+### Other
+
+- Rolled back release as 0.2.3 did not succeed being published
+- Enabled Trusted Publishing for crates.io
+- release v0.2.3 ([#5](https://github.com/NEAR-DevHub/near-business-cli/pull/5))
+
 ## [0.2.2](https://github.com/NEAR-DevHub/near-business-cli/compare/v0.2.1...v0.2.2) - 2026-11-05
 
 ### Other
