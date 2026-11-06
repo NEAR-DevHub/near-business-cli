@@ -293,7 +293,15 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          TAG="${{ needs.plan.outputs.tag }}"
+          # A re-run after a failed release may find the release already
+          # there: replace its assets and notes instead of failing.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber artifacts/*
+            gh release edit "$TAG" --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt"
+          else
+            gh release create "$TAG" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          fi
 
   publish-npm:
     needs:
@@ -322,7 +330,15 @@ jobs:
       - run: |
           for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
             pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
-            npm publish --access public "./npm/${pkg}"
+            # A re-run after a failed release may find this version already
+            # on npm: skip it instead of failing.
+            if ! out=$(npm publish --access public "./npm/${pkg}" 2>&1); then
+              echo "$out"
+              grep -q "previously published" <<<"$out" || exit 1
+              echo "${pkg}: this version is already on npm, skipping"
+            else
+              echo "$out"
+            fi
           done
         env:
           # Only needed for the first publish: npm uses trusted publishing

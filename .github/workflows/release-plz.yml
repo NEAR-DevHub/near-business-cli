@@ -8,11 +8,24 @@ on:
   push:
     branches:
       - main
+  # Run by hand to (re-)publish a release, e.g. after fixing a CI failure that
+  # stopped the release half way. Pick the branch to run from in "Use workflow
+  # from"; its Cargo.toml version must match the tag being published.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Existing release tag to re-publish binaries, GitHub Release and npm
+          package for (e.g. v0.2.3). Leave empty to release the current
+          version: publish it to crates.io and tag it unless that already
+          happened, then build and publish the binaries.
+        required: false
+        type: string
 
 jobs:
-  # Publish to crates.io and tag the release, but only when the merged commit
-  # is a release PR (`release_always = false` in release-plz.toml).
+  # Publish to crates.io and tag the release. On push, only when the merged
+  # commit is a release PR (`release_always = false` in release-plz.toml); on a
+  # manual run, from any commit.
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
@@ -34,23 +47,57 @@ jobs:
       - &install-packages
         name: Install packages (Linux)
         run: sudo apt-get update && sudo apt-get install --assume-yes libudev-dev
+      - name: Allow releasing from any commit (manual run)
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.tag }}
+        # Kept outside the checkout: release-plz refuses to release from a
+        # dirty working tree.
+        run: sed 's/^release_always = false/release_always = true/' release-plz.toml > "$RUNNER_TEMP/release-plz.toml"
       - name: Run release-plz
         id: release-plz
+        if: ${{ !inputs.tag }}
         uses: release-plz/action@v0.5
         with:
           command: release
+          config: ${{ github.event_name == 'workflow_dispatch' && format('{0}/release-plz.toml', runner.temp) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The tag to build binaries for: the one release-plz just created or, on a
+      # manual run, the requested tag (default: the current version's tag, when
+      # crates.io already has that version and release-plz skipped it).
+      - name: Pick the release tag
+        id: tag
+        env:
+          RELEASES_CREATED: ${{ steps.release-plz.outputs.releases_created }}
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [[ "$RELEASES_CREATED" == "true" ]]; then
+            tag=$(jq -r '.[0].tag' <<<"$RELEASES")
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="${INPUT_TAG:-v$version}"
+            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "::error::Tag $tag does not exist"
+              exit 1
+            fi
+            if [[ "$tag" != "v$version" ]]; then
+              echo "::error::Tag $tag doesn't match version $version in Cargo.toml of $GITHUB_REF_NAME. Run the workflow from a branch at that version."
+              exit 1
+            fi
+          else
+            tag=""
+          fi
+          echo "Release tag: ${tag:-none}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
     outputs:
-      releases_created: ${{ steps.release-plz.outputs.releases_created }}
-      tag: ${{ steps.release-plz.outputs.releases_created == 'true' && fromJSON(steps.release-plz.outputs.releases)[0].tag || '' }}
+      tag: ${{ steps.tag.outputs.tag }}
 
   # Build the binaries and installers, create the GitHub Release and publish
-  # the npm package for the tag release-plz just pushed.
+  # the npm package for the release tag.
   release-binaries:
     name: Release binaries
     needs: release-plz-release
-    if: ${{ needs.release-plz-release.outputs.releases_created == 'true' }}
+    if: ${{ needs.release-plz-release.outputs.tag != '' }}
     uses: ./.github/workflows/release.yml
     permissions:
       contents: write
@@ -63,7 +110,7 @@ jobs:
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'NEAR-DevHub' }}
+    if: ${{ github.repository_owner == 'NEAR-DevHub' && github.event_name == 'push' }}
     permissions:
       contents: write
       pull-requests: write
