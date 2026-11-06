@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4](https://github.com/NEAR-DevHub/near-business-cli/compare/v0.2.3...v0.2.4) - 2026-11-06
+
+### Other
+
+- allow re-running a release by hand ([#9](https://github.com/NEAR-DevHub/near-business-cli/pull/9))
+- release v0.2.3 ([#7](https://github.com/NEAR-DevHub/near-business-cli/pull/7))
+
 ## [0.2.3](https://github.com/NEAR-DevHub/near-business-cli/compare/v0.2.2...v0.2.3) - 2026-11-05
 
 ### Added
