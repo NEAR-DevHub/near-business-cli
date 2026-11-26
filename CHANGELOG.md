@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5](https://github.com/NEAR-DevHub/near-business-cli/compare/v0.2.4...v0.2.5) - 2026-11-26
+
+### Other
+
+- add "Using from scripts and AI agents" to the README ([#11](https://github.com/NEAR-DevHub/near-business-cli/pull/11))
+
 ## [0.2.4](https://github.com/NEAR-DevHub/near-business-cli/compare/v0.2.3...v0.2.4) - 2026-11-26
 
 ### Fixed
