@@ -1073,15 +1073,8 @@ fn build_confidential_proposal(
         .and_then(|v| v.as_str())
         .ok_or_else(|| color_eyre::eyre::eyre!("No payloadHash in generate-intent response"))?;
 
-    let signer_args = serde_json::json!({
-        "request": {
-            "path": treasury_id,
-            "payload_v2": {
-                "Eddsa": payload_hash,
-            },
-            "domain_id": 1,
-        }
-    });
+    let domain_id = mpc_domain_id(&intent_response);
+    let signer_args = v1_signer_sign_args(treasury_id, payload_hash, domain_id);
 
     let args_base64 = base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
@@ -1113,15 +1106,47 @@ fn build_confidential_proposal(
     tracing::info!(
         target: "near_teach_me",
         parent: &tracing::Span::none(),
-        "Proposal asks v1.signer to MPC-sign NEP-413 payload hash {} for path '{}' (domain 1 = \
-         Ed25519). The backend stored the matching intent and will submit it to 1Click once it \
+        "Proposal asks v1.signer to MPC-sign NEP-413 payload hash {} for path '{}' (EdDSA domain \
+         {}, the treasury's registered MPC key). The backend stored the matching intent and will submit it to 1Click once it \
          sees this signature in an approved vote relayed with proposalType=\"vote\".",
         payload_hash,
-        treasury_id
+        treasury_id,
+        domain_id
     );
     tracing::info!("  Intent generated, payload hash: {}", payload_hash);
 
     Ok((description, kind))
+}
+
+/// EdDSA domain on `v1.signer` for treasuries created before the MPC key
+/// rotation. Mirrors the web app's `MPC_EDDSA_DOMAIN_LEGACY`.
+const MPC_EDDSA_DOMAIN_LEGACY: u64 = 1;
+
+/// The `v1.signer` domain the treasury's MPC key was registered with.
+///
+/// The backend returns it as `mpcDomainId` in the generate-intent response:
+/// 1 for treasuries created before the MPC key rotation, 5 for newer ones.
+/// Signing with the wrong domain yields a signature intents.near rejects, so
+/// this mirrors the web app and falls back to the legacy domain only when the
+/// field is absent (an older backend).
+fn mpc_domain_id(intent_response: &serde_json::Value) -> u64 {
+    intent_response
+        .get("mpcDomainId")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(MPC_EDDSA_DOMAIN_LEGACY)
+}
+
+/// Arguments for `v1.signer` `sign` over a NEP-413 payload hash.
+fn v1_signer_sign_args(treasury_id: &str, payload_hash: &str, domain_id: u64) -> serde_json::Value {
+    serde_json::json!({
+        "request": {
+            "path": treasury_id,
+            "payload_v2": {
+                "Eddsa": payload_hash,
+            },
+            "domain_id": domain_id,
+        }
+    })
 }
 
 /// Public intents route: the proposal moves `amountIn` from the treasury to
@@ -1500,5 +1525,34 @@ mod tests {
         assert!(normalize_amount("0", "USDT", 6).is_err());
         // more fractional digits than the token supports
         assert!(normalize_amount("0.0000001", "USDT", 6).is_err());
+    }
+
+    #[test]
+    fn mpc_domain_id_follows_backend() {
+        let current = serde_json::json!({ "payloadHash": "h", "mpcDomainId": 5 });
+        let legacy = serde_json::json!({ "payloadHash": "h", "mpcDomainId": 1 });
+        assert_eq!(mpc_domain_id(&current), 5);
+        assert_eq!(mpc_domain_id(&legacy), 1);
+    }
+
+    #[test]
+    fn mpc_domain_id_defaults_to_legacy_when_missing() {
+        let response = serde_json::json!({ "payloadHash": "h" });
+        assert_eq!(mpc_domain_id(&response), MPC_EDDSA_DOMAIN_LEGACY);
+    }
+
+    #[test]
+    fn v1_signer_sign_args_carry_domain() {
+        let args = v1_signer_sign_args("t.sputnik-dao.near", "abc", 5);
+        assert_eq!(
+            args,
+            serde_json::json!({
+                "request": {
+                    "path": "t.sputnik-dao.near",
+                    "payload_v2": { "Eddsa": "abc" },
+                    "domain_id": 5,
+                }
+            })
+        );
     }
 }
