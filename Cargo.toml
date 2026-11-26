@@ -1,6 +1,6 @@
 [package]
 name = "near-business-cli"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 resolver = "3"
 description = "Manage your confidential Near Business treasuries from the command line"
